@@ -4,7 +4,13 @@ import { db } from '../firebaseConfig';
 import {
   collection,
   addDoc,
-  serverTimestamp
+  serverTimestamp,
+  onSnapshot,
+  orderBy,
+  query,
+  doc,
+  setDoc,
+  Timestamp,
 } from 'firebase/firestore';
 
 interface Message {
@@ -14,6 +20,13 @@ interface Message {
 
 interface ChatProps {
   user: User;
+}
+
+interface Conversation {
+  id: string;
+  messages: Message[];
+  model: string;
+  createdAt?: Timestamp | null;
 }
 
 // Helper to call different AI providers based on the selected model
@@ -106,6 +119,11 @@ export default function Chat({ user }: ChatProps) {
   const [input, setInput] = useState('');
   const [model, setModel] = useState('chatgpt');
   const [loading, setLoading] = useState(false);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(
+    null
+  );
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Scroll to bottom on new message
@@ -113,31 +131,107 @@ export default function Chat({ user }: ChatProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Load recent conversations for the user
+  useEffect(() => {
+    const conversationsRef = collection(
+      db,
+      'users',
+      user.uid,
+      'conversations'
+    );
+    const q = query(conversationsRef, orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const history = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data() as Partial<Conversation>;
+          return {
+            id: docSnap.id,
+            messages: data.messages || [],
+            model: data.model || 'chatgpt',
+            createdAt: data.createdAt || null,
+          };
+        });
+        setConversations(history);
+        setHistoryError(null);
+      },
+      (err) => {
+        console.error('Error loading conversations', err);
+        setHistoryError('Could not load previous conversations.');
+      }
+    );
+
+    return unsubscribe;
+  }, [user.uid]);
+
+  const formatDate = (timestamp?: Timestamp | null) => {
+    if (!timestamp?.toDate) return 'Unknown date';
+    return timestamp.toDate().toLocaleString();
+  };
+
+  const startNewConversation = () => {
+    setActiveConversationId(null);
+    setMessages([]);
+    setModel('chatgpt');
+  };
+
+  const loadConversation = (conversation: Conversation) => {
+    setActiveConversationId(conversation.id);
+    setMessages(conversation.messages || []);
+    setModel(conversation.model || 'chatgpt');
+  };
+
   const sendMessage = async () => {
     if (!input.trim()) return;
     // Add user message to state
-    const newMessages = [...messages, { role: 'user', content: input.trim() }];
+    const newMessages: Message[] = [
+      ...messages,
+      { role: 'user', content: input.trim() },
+    ];
     setMessages(newMessages);
     setInput('');
     setLoading(true);
     // Call AI
     const reply = await callAI(model, newMessages);
-    const updatedMessages = [...newMessages, { role: 'assistant', content: reply }];
+    const updatedMessages: Message[] = [
+      ...newMessages,
+      { role: 'assistant', content: reply },
+    ];
     setMessages(updatedMessages);
     setLoading(false);
     // Save conversation to Firestore
     try {
-      const convoRef = collection(
-        db,
-        'users',
-        user.uid,
-        'conversations'
-      );
-      await addDoc(convoRef, {
-        messages: updatedMessages,
-        model,
-        createdAt: serverTimestamp(),
-      });
+      if (activeConversationId) {
+        const convoDoc = doc(
+          db,
+          'users',
+          user.uid,
+          'conversations',
+          activeConversationId
+        );
+        await setDoc(
+          convoDoc,
+          {
+            messages: updatedMessages,
+            model,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      } else {
+        const convoRef = collection(
+          db,
+          'users',
+          user.uid,
+          'conversations'
+        );
+        const docRef = await addDoc(convoRef, {
+          messages: updatedMessages,
+          model,
+          createdAt: serverTimestamp(),
+        });
+        setActiveConversationId(docRef.id);
+      }
     } catch (err) {
       console.error('Error saving conversation', err);
     }
@@ -151,32 +245,60 @@ export default function Chat({ user }: ChatProps) {
   };
 
   return (
-    <div>
-      <div className="chat-box">
-        {messages.map((msg, idx) => (
-          <div key={idx} className={`message ${msg.role}`}>
-            <strong>{msg.role === 'user' ? 'You' : 'AI'}:</strong> {msg.content}
-          </div>
-        ))}
-        {loading && <div className="message assistant">AI is typing…</div>}
-        <div ref={messagesEndRef} />
-      </div>
-      <div className="input-area">
-        <select value={model} onChange={(e) => setModel(e.target.value)}>
-          <option value="chatgpt">ChatGPT (OpenAI)</option>
-          <option value="claude">Claude (Anthropic)</option>
-          <option value="deepseek">DeepSeek</option>
-        </select>
-        <input
-          type="text"
-          value={input}
-          placeholder="Type your message…"
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-        />
-        <button onClick={sendMessage} disabled={loading || !input.trim()}>
-          Send
-        </button>
+    <div className="chat-layout">
+      <aside className="history-panel">
+        <div className="history-header">
+          <h3>Recent conversations</h3>
+          <button className="secondary" onClick={startNewConversation}>
+            New chat
+          </button>
+        </div>
+        {historyError && <p className="history-error">{historyError}</p>}
+        <div className="history-list">
+          {conversations.length === 0 && (
+            <p className="history-empty">No past conversations yet.</p>
+          )}
+          {conversations.map((conversation) => (
+            <button
+              key={conversation.id}
+              className={`history-item ${
+                activeConversationId === conversation.id ? 'active' : ''
+              }`}
+              onClick={() => loadConversation(conversation)}
+            >
+              <span className="history-title">{conversation.model}</span>
+              <span className="history-date">{formatDate(conversation.createdAt)}</span>
+            </button>
+          ))}
+        </div>
+      </aside>
+      <div className="chat-pane">
+        <div className="chat-box">
+          {messages.map((msg, idx) => (
+            <div key={idx} className={`message ${msg.role}`}>
+              <strong>{msg.role === 'user' ? 'You' : 'AI'}:</strong> {msg.content}
+            </div>
+          ))}
+          {loading && <div className="message assistant">AI is typing…</div>}
+          <div ref={messagesEndRef} />
+        </div>
+        <div className="input-area">
+          <select value={model} onChange={(e) => setModel(e.target.value)}>
+            <option value="chatgpt">ChatGPT (OpenAI)</option>
+            <option value="claude">Claude (Anthropic)</option>
+            <option value="deepseek">DeepSeek</option>
+          </select>
+          <input
+            type="text"
+            value={input}
+            placeholder="Type your message…"
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+          />
+          <button onClick={sendMessage} disabled={loading || !input.trim()}>
+            Send
+          </button>
+        </div>
       </div>
     </div>
   );
