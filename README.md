@@ -7,6 +7,7 @@ This repository contains a **server‑less** AI chat application that runs both 
 - **Multi‑model support** – choose between ChatGPT, Claude and DeepSeek from a simple drop‑down.  Models share a common chat history so you can compare their responses.
 - **Firebase authentication** – sign in with Google or email/password; conversations are stored per user in Firestore under `users/{uid}/conversations`.
 - **Real‑time chat UI** – messages appear instantly, and the assistant’s responses stream in as they arrive.
+- **Conversation history** – revisit and continue your recent chats directly from the sidebar.
 - **Fully client‑side** – all API calls are made directly from the browser or mobile client; no custom backend is required.
 
 ## Repository structure

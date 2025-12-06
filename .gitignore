@@ -1,0 +1,8 @@
+node_modules/
+web/node_modules/
+mobile/node_modules/
+web/.next/
+web/.env.local
+mobile/.env
+npm-debug.log*
+.DS_Store
